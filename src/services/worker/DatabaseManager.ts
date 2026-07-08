@@ -16,7 +16,16 @@ export class DatabaseManager {
 
   async initialize(): Promise<void> {
     this.db = new Database(DB_PATH);
-    
+
+    // foreign_keys is per-connection and defaults to OFF. SessionStore only
+    // enables it when it opens the DB from a path; here we pass an existing
+    // Database handle, so it must be enabled explicitly. Without it, the
+    // ON UPDATE CASCADE on observations/session_summaries never fires when a
+    // session's memory_session_id is rewritten on resume, orphaning every
+    // observation from prior rounds. This is the worker's write connection —
+    // the one that actually mutates sessions — so it is where the pragma matters.
+    this.db.run('PRAGMA foreign_keys = ON');
+
     this.sessionStore = new SessionStore(this.db);
     this.sessionSearch = new SessionSearch(this.db);
 
