@@ -5,6 +5,7 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { ORPHAN_PLATFORM_SOURCE } from '../../shared/platform-source.js';
 import type {
   ContextConfig,
   Observation,
@@ -29,7 +30,7 @@ export function queryObservations(
     SELECT
       o.id,
       o.memory_session_id,
-      COALESCE(s.platform_source, 'claude') as platform_source,
+      COALESCE(s.platform_source, '${ORPHAN_PLATFORM_SOURCE}') as platform_source,
       o.type,
       o.title,
       o.subtitle,
@@ -69,7 +70,7 @@ export function querySummaries(
     SELECT
       ss.id,
       ss.memory_session_id,
-      COALESCE(s.platform_source, 'claude') as platform_source,
+      COALESCE(s.platform_source, '${ORPHAN_PLATFORM_SOURCE}') as platform_source,
       ss.request,
       ss.investigated,
       ss.learned,
@@ -101,7 +102,7 @@ export function queryObservationsMulti(
     SELECT
       o.id,
       o.memory_session_id,
-      COALESCE(s.platform_source, 'claude') as platform_source,
+      COALESCE(s.platform_source, '${ORPHAN_PLATFORM_SOURCE}') as platform_source,
       o.type,
       o.title,
       o.subtitle,
@@ -156,7 +157,7 @@ export function querySummariesMulti(
     SELECT
       ss.id,
       ss.memory_session_id,
-      COALESCE(s.platform_source, 'claude') as platform_source,
+      COALESCE(s.platform_source, '${ORPHAN_PLATFORM_SOURCE}') as platform_source,
       ss.request,
       ss.investigated,
       ss.learned,
