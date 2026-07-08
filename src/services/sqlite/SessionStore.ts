@@ -14,7 +14,7 @@ import {
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash } from './observations/store.js';
 import { parseFileList } from './observations/files.js';
-import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
+import { DEFAULT_PLATFORM_SOURCE, ORPHAN_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText } from './prompt-storage.js';
 
@@ -1189,7 +1189,7 @@ export class SessionStore {
         o.subtitle,
         o.text,
         o.project,
-        COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+        COALESCE(s.platform_source, '${ORPHAN_PLATFORM_SOURCE}') as platform_source,
         o.prompt_number,
         o.created_at,
         o.created_at_epoch
@@ -1241,7 +1241,7 @@ export class SessionStore {
         ss.files_edited,
         ss.notes,
         ss.project,
-        COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+        COALESCE(s.platform_source, '${ORPHAN_PLATFORM_SOURCE}') as platform_source,
         ss.prompt_number,
         ss.created_at,
         ss.created_at_epoch
@@ -1284,7 +1284,7 @@ export class SessionStore {
         up.id,
         up.content_session_id,
         s.project,
-        COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+        COALESCE(s.platform_source, '${ORPHAN_PLATFORM_SOURCE}') as platform_source,
         up.prompt_number,
         up.prompt_text,
         up.created_at,

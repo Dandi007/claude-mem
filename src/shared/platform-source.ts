@@ -1,5 +1,17 @@
 export const DEFAULT_PLATFORM_SOURCE = 'claude';
 
+// Read-side attribution for a memory row (observation / summary / prompt) whose
+// owning sdk_sessions row cannot be resolved via LEFT JOIN — i.e. an *orphan*.
+// These rows are NOT claude sessions with a missing field; their lineage is
+// severed (the mutable memory_session_id was rewritten while PRAGMA foreign_keys
+// was off, so ON UPDATE CASCADE never fired). Bucketing them as DEFAULT_PLATFORM_SOURCE
+// ('claude') silently misattributes them and lets them bleed into a claude-scoped
+// filter. 'unknown' keeps the attribution honest and quantifiable.
+// NOTE: only use this at read sites that LEFT JOIN sdk_sessions (orphan-capable).
+// Sites that query sdk_sessions directly, or INNER JOIN it, keep DEFAULT_PLATFORM_SOURCE
+// because their COALESCE fallback mirrors the NOT NULL column default, not an orphan.
+export const ORPHAN_PLATFORM_SOURCE = 'unknown';
+
 function sanitizeRawSource(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, '-');
 }

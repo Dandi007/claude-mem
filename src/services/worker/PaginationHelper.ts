@@ -3,6 +3,7 @@ import type { SQLQueryBindings } from 'bun:sqlite';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
+import { ORPHAN_PLATFORM_SOURCE } from '../../shared/platform-source.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../shared/user-prompts.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
 
@@ -60,7 +61,7 @@ export class PaginationHelper {
         o.memory_session_id,
         o.project,
         o.merged_into_project,
-        COALESCE(s.platform_source, 'claude') as platform_source,
+        COALESCE(s.platform_source, '${ORPHAN_PLATFORM_SOURCE}') as platform_source,
         o.type,
         o.title,
         o.subtitle,
@@ -87,7 +88,7 @@ export class PaginationHelper {
       params.push(OBSERVER_SESSIONS_PROJECT);
     }
     if (platformSource) {
-      conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
+      conditions.push(`COALESCE(s.platform_source, '${ORPHAN_PLATFORM_SOURCE}') = ?`);
       params.push(platformSource);
     }
     if (conditions.length > 0) {

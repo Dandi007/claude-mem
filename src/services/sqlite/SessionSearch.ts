@@ -3,6 +3,7 @@ import { TableNameRow } from '../../types/database.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild } from '../../shared/path-utils.js';
+import { ORPHAN_PLATFORM_SOURCE } from '../../shared/platform-source.js';
 import { AppError } from '../server/ErrorHandler.js';
 import {
   ObservationSearchResult,
@@ -163,12 +164,14 @@ export class SessionSearch {
     // Source-scoping (#2389): when a platformSource is supplied, restrict to
     // rows whose owning sdk_session has that platform_source. observations and
     // session_summaries both carry memory_session_id, which is the FK into
-    // sdk_sessions. COALESCE mirrors PaginationHelper: legacy rows with a NULL
-    // platform_source are treated as 'claude' so they never bleed into a
-    // codex/other-agent search.
+    // sdk_sessions. The correlated subquery returns NULL for an *orphan* row
+    // (memory_session_id no longer resolves to any sdk_session), so COALESCE
+    // buckets it as ORPHAN_PLATFORM_SOURCE ('unknown') — keeping orphans out of
+    // both claude- and codex-scoped searches instead of silently leaking them
+    // into 'claude'.
     if (filters.platformSource) {
       conditions.push(
-        `COALESCE((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = ${tableAlias}.memory_session_id), 'claude') = ?`
+        `COALESCE((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = ${tableAlias}.memory_session_id), '${ORPHAN_PLATFORM_SOURCE}') = ?`
       );
       params.push(filters.platformSource);
     }
