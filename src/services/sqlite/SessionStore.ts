@@ -71,6 +71,67 @@ export class SessionStore {
     this.dropDeadPendingMessagesColumns();
     this.ensurePendingMessagesToolUseIdColumn();
     this.dropWorkerPidColumn();
+    this.addSessionDbIdColumn();
+  }
+
+  /**
+   * Migration 33 — add an immutable-surrogate link column `session_db_id` to
+   * observations/session_summaries, pointing at sdk_sessions.id (the stable
+   * AUTOINCREMENT PK) instead of the mutable memory_session_id natural key.
+   *
+   * Adds a nullable column + index (no table rebuild — preserves all existing
+   * columns/triggers/Chroma alignment) and backfills every row whose
+   * memory_session_id currently resolves. Rows that don't resolve (orphans)
+   * stay NULL here; a separate one-time log-mining backfill recovers their
+   * session_db_id from worker logs. Read paths join on session_db_id so
+   * recovered orphans resolve; unrecovered rows fall back to 'unknown'.
+   *
+   * Note: this does NOT re-declare the FK (that needs a full table rebuild and
+   * is unnecessary for correctness — migration 21's ON UPDATE CASCADE plus the
+   * worker FK-pragma fix already prevent new orphans). FK retarget is optional
+   * future polish.
+   */
+  private addSessionDbIdColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(33) as SchemaVersion | undefined;
+
+    const obsCols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const summariesCols = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+    const obsHas = obsCols.some(c => c.name === 'session_db_id');
+    const summariesHas = summariesCols.some(c => c.name === 'session_db_id');
+    if (applied && obsHas && summariesHas) return;
+
+    try {
+      if (!obsHas) {
+        this.db.run('ALTER TABLE observations ADD COLUMN session_db_id INTEGER');
+      }
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_session_db_id ON observations(session_db_id)');
+      this.db.run(`
+        UPDATE observations
+        SET session_db_id = (SELECT s.id FROM sdk_sessions s WHERE s.memory_session_id = observations.memory_session_id)
+        WHERE session_db_id IS NULL
+          AND EXISTS (SELECT 1 FROM sdk_sessions s WHERE s.memory_session_id = observations.memory_session_id)
+      `);
+
+      if (!summariesHas) {
+        this.db.run('ALTER TABLE session_summaries ADD COLUMN session_db_id INTEGER');
+      }
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_session_summaries_session_db_id ON session_summaries(session_db_id)');
+      this.db.run(`
+        UPDATE session_summaries
+        SET session_db_id = (SELECT s.id FROM sdk_sessions s WHERE s.memory_session_id = session_summaries.memory_session_id)
+        WHERE session_db_id IS NULL
+          AND EXISTS (SELECT 1 FROM sdk_sessions s WHERE s.memory_session_id = session_summaries.memory_session_id)
+      `);
+
+      logger.debug('DB', 'Added session_db_id column + backfilled resolvable rows on observations/session_summaries');
+    } catch (error) {
+      logger.warn('DB', 'Failed to add/backfill session_db_id column', {}, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+
+    if (!applied) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(33, new Date().toISOString());
+    }
   }
 
   private dropWorkerPidColumn(): void {
@@ -1194,7 +1255,7 @@ export class SessionStore {
         o.created_at,
         o.created_at_epoch
       FROM observations o
-      LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+      LEFT JOIN sdk_sessions s ON o.session_db_id = s.id
       ORDER BY o.created_at_epoch DESC
       LIMIT ?
     `);
@@ -1246,7 +1307,7 @@ export class SessionStore {
         ss.created_at,
         ss.created_at_epoch
       FROM session_summaries ss
-      LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
+      LEFT JOIN sdk_sessions s ON ss.session_db_id = s.id
       ORDER BY ss.created_at_epoch DESC
       LIMIT ?
     `);
@@ -1803,19 +1864,25 @@ export class SessionStore {
     const timestampIso = new Date(timestampEpoch).toISOString();
 
     const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
+    // Migration 33: link to the immutable sdk_sessions.id so lineage survives a
+    // memory_session_id rewrite. The session row exists at this point (the write
+    // path registers it before storing — see ResponseProcessor).
+    const sessionDbId = (this.db.prepare('SELECT id FROM sdk_sessions WHERE memory_session_id = ?')
+      .get(memorySessionId) as { id: number } | undefined)?.id ?? null;
 
     const stmt = this.db.prepare(`
       INSERT INTO observations
-      (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+      (memory_session_id, session_db_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
        generated_by_model, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(memory_session_id, content_hash) DO NOTHING
       RETURNING id, created_at_epoch
     `);
 
     const inserted = stmt.get(
       memorySessionId,
+      sessionDbId,
       project,
       observation.type,
       observation.title,
@@ -1869,16 +1936,20 @@ export class SessionStore {
   ): { id: number; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
+    // Migration 33: link to immutable sdk_sessions.id.
+    const sessionDbId = (this.db.prepare('SELECT id FROM sdk_sessions WHERE memory_session_id = ?')
+      .get(memorySessionId) as { id: number } | undefined)?.id ?? null;
 
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries
-      (memory_session_id, project, request, investigated, learned, completed,
+      (memory_session_id, session_db_id, project, request, investigated, learned, completed,
        next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
       memorySessionId,
+      sessionDbId,
       project,
       summary.request,
       summary.investigated,
@@ -1928,16 +1999,20 @@ export class SessionStore {
   ): { observationIds: number[]; summaryId: number | null; createdAtEpoch: number } {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
+    // Migration 33: whole batch shares one memory_session_id, so resolve the
+    // immutable sdk_sessions.id once (session row exists before storage).
+    const sessionDbId = (this.db.prepare('SELECT id FROM sdk_sessions WHERE memory_session_id = ?')
+      .get(memorySessionId) as { id: number } | undefined)?.id ?? null;
 
     const storeTx = this.db.transaction(() => {
       const observationIds: number[] = [];
 
       const obsStmt = this.db.prepare(`
         INSERT INTO observations
-        (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+        (memory_session_id, session_db_id, project, type, title, subtitle, facts, narrative, concepts,
          files_read, files_modified, prompt_number, discovery_tokens, agent_type, agent_id, content_hash, created_at, created_at_epoch,
          generated_by_model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(memory_session_id, content_hash) DO NOTHING
         RETURNING id
       `);
@@ -1949,6 +2024,7 @@ export class SessionStore {
         const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
         const inserted = obsStmt.get(
           memorySessionId,
+          sessionDbId,
           project,
           observation.type,
           observation.title,
@@ -1986,13 +2062,14 @@ export class SessionStore {
       if (summary) {
         const summaryStmt = this.db.prepare(`
           INSERT INTO session_summaries
-          (memory_session_id, project, request, investigated, learned, completed,
+          (memory_session_id, session_db_id, project, request, investigated, learned, completed,
            next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const result = summaryStmt.run(
           memorySessionId,
+          sessionDbId,
           project,
           summary.request,
           summary.investigated,
@@ -2398,16 +2475,19 @@ export class SessionStore {
       return { imported: false, id: existing.id };
     }
 
+    const sessionDbId = (this.db.prepare('SELECT id FROM sdk_sessions WHERE memory_session_id = ?')
+      .get(summary.memory_session_id) as { id: number } | undefined)?.id ?? null;
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries (
-        memory_session_id, project, request, investigated, learned,
+        memory_session_id, session_db_id, project, request, investigated, learned,
         completed, next_steps, files_read, files_edited, notes,
         prompt_number, discovery_tokens, created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
       summary.memory_session_id,
+      sessionDbId,
       summary.project,
       summary.request,
       summary.investigated,
@@ -2454,17 +2534,20 @@ export class SessionStore {
       return { imported: false, id: existing.id };
     }
 
+    const sessionDbId = (this.db.prepare('SELECT id FROM sdk_sessions WHERE memory_session_id = ?')
+      .get(obs.memory_session_id) as { id: number } | undefined)?.id ?? null;
     const stmt = this.db.prepare(`
       INSERT INTO observations (
-        memory_session_id, project, text, type, title, subtitle,
+        memory_session_id, session_db_id, project, text, type, title, subtitle,
         facts, narrative, concepts, files_read, files_modified,
         prompt_number, discovery_tokens, agent_type, agent_id,
         created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
       obs.memory_session_id,
+      sessionDbId,
       obs.project,
       obs.text,
       obs.type,

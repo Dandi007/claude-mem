@@ -3,13 +3,15 @@ import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
 import { ORPHAN_PLATFORM_SOURCE } from '../../../src/shared/platform-source.js';
 
-// Orphan platform attribution: an observation whose owning sdk_sessions row can
-// no longer be resolved (its mutable memory_session_id was rewritten on session
-// resume while PRAGMA foreign_keys was off, so ON UPDATE CASCADE never fired)
-// must NOT be silently attributed to 'claude'. Read-side LEFT-JOIN sites bucket
-// it as ORPHAN_PLATFORM_SOURCE ('unknown') so it stays honest and quantifiable,
-// and never bleeds into a claude-scoped search.
-describe('orphan platform attribution', () => {
+// Post-migration-33 attribution model: read paths resolve a memory row to its
+// session via the immutable session_db_id (→ sdk_sessions.id), NOT the mutable
+// memory_session_id. So:
+//   - a resume rewrite of memory_session_id no longer orphans anything (the
+//     migration's whole point — session_db_id is stable);
+//   - a TRUE orphan is a row whose session_db_id could not be resolved (NULL,
+//     e.g. an old row the log-mining backfill couldn't recover). Those must read
+//     as ORPHAN_PLATFORM_SOURCE ('unknown') and never bleed into a claude search.
+describe('orphan platform attribution (session_db_id model)', () => {
   let store: SessionStore;
   let search: SessionSearch;
 
@@ -34,17 +36,9 @@ describe('orphan platform attribution', () => {
     }, 1);
   }
 
-  // Reproduce the real bug: the production worker's DB handle ran with
-  // PRAGMA foreign_keys OFF, so rewriting a session's mutable memory_session_id
-  // on resume did NOT cascade to its observations — they were left dangling.
-  // We turn FK off here to model that exact condition, then rewrite in place.
-  function orphanSession(oldMemorySessionId: string, newMemorySessionId: string): void {
-    store.db.run('PRAGMA foreign_keys = OFF');
-    store.db.run(
-      'UPDATE sdk_sessions SET memory_session_id = ? WHERE memory_session_id = ?',
-      [newMemorySessionId, oldMemorySessionId],
-    );
-    store.db.run('PRAGMA foreign_keys = ON');
+  // An unrecoverable orphan: session_db_id could not be resolved/backfilled.
+  function makeUnrecoverableOrphan(title: string): void {
+    store.db.run('UPDATE observations SET session_db_id = NULL WHERE title = ?', [title]);
   }
 
   beforeEach(() => {
@@ -53,24 +47,19 @@ describe('orphan platform attribution', () => {
 
     seedObservation('live-sess', 'live-mem', 'claude', 'Live finding', 'shared orphan keyword live');
     seedObservation('doomed-sess', 'doomed-mem', 'claude', 'Doomed finding', 'shared orphan keyword doomed');
-    // Sever the second observation's lineage — it is now an orphan.
-    orphanSession('doomed-mem', 'doomed-mem-rewritten');
+    makeUnrecoverableOrphan('Doomed finding');
   });
 
   afterEach(() => {
     store.close();
   });
 
-  it('sanity: exactly one observation is now an orphan', () => {
-    const orphanCount = store.db
-      .prepare(`SELECT COUNT(*) AS n FROM observations o
-                LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-                WHERE s.memory_session_id IS NULL`)
-      .get() as { n: number };
-    expect(orphanCount.n).toBe(1);
+  it('sanity: exactly one observation has an unresolved session_db_id', () => {
+    const n = store.db.prepare('SELECT COUNT(*) AS n FROM observations WHERE session_db_id IS NULL').get() as { n: number };
+    expect(n.n).toBe(1);
   });
 
-  it('SELECT path: orphan observation reads back as unknown, not claude', () => {
+  it('SELECT path: unresolved-lineage observation reads back as unknown, not claude', () => {
     const recent = store.getAllRecentObservations(50);
     const orphan = recent.find(o => o.title === 'Doomed finding');
     const live = recent.find(o => o.title === 'Live finding');
@@ -86,5 +75,15 @@ describe('orphan platform attribution', () => {
   it('filter path: orphan IS retrievable under an unknown-scoped search', () => {
     const unknownResults = search.searchObservations('orphan', { platformSource: ORPHAN_PLATFORM_SOURCE, project: 'orphan-project' });
     expect(unknownResults.map(r => r.title)).toEqual(['Doomed finding']);
+  });
+
+  it('migration 33 heal: a memory_session_id rewrite (resume) no longer orphans — session_db_id keeps it linked', () => {
+    // 'Live finding' was stored with session_db_id pointing at its session.
+    // Simulate a resume rewrite of the session's mutable key.
+    store.db.run("UPDATE sdk_sessions SET memory_session_id = 'live-mem-RESUMED' WHERE memory_session_id = 'live-mem'");
+    const recent = store.getAllRecentObservations(50);
+    const live = recent.find(o => o.title === 'Live finding');
+    // Still resolves to the real platform via session_db_id — not orphaned.
+    expect(live?.platform_source).toBe('claude');
   });
 });

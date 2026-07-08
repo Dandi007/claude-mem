@@ -171,7 +171,7 @@ export class SessionSearch {
     // into 'claude'.
     if (filters.platformSource) {
       conditions.push(
-        `COALESCE((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.memory_session_id = ${tableAlias}.memory_session_id), '${ORPHAN_PLATFORM_SOURCE}') = ?`
+        `COALESCE((SELECT s2.platform_source FROM sdk_sessions s2 WHERE s2.id = ${tableAlias}.session_db_id), '${ORPHAN_PLATFORM_SOURCE}') = ?`
       );
       params.push(filters.platformSource);
     }
