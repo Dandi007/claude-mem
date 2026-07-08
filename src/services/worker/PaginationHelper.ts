@@ -75,7 +75,7 @@ export class PaginationHelper {
         o.created_at,
         o.created_at_epoch
       FROM observations o
-      LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+      LEFT JOIN sdk_sessions s ON o.session_db_id = s.id
     `;
     const params: SQLQueryBindings[] = [];
     const conditions: string[] = [];

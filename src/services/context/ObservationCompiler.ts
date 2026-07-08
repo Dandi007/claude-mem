@@ -43,7 +43,7 @@ export function queryObservations(
       o.created_at,
       o.created_at_epoch
     FROM observations o
-    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+    LEFT JOIN sdk_sessions s ON o.session_db_id = s.id
     WHERE (o.project = ? OR o.merged_into_project = ?)
       AND type IN (${typePlaceholders})
       AND EXISTS (
@@ -79,7 +79,7 @@ export function querySummaries(
       ss.created_at,
       ss.created_at_epoch
     FROM session_summaries ss
-    LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
+    LEFT JOIN sdk_sessions s ON ss.session_db_id = s.id
     WHERE (ss.project = ? OR ss.merged_into_project = ?)
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
@@ -116,7 +116,7 @@ export function queryObservationsMulti(
       o.created_at_epoch,
       o.project
     FROM observations o
-    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+    LEFT JOIN sdk_sessions s ON o.session_db_id = s.id
     WHERE (o.project IN (${projectPlaceholders})
            OR o.merged_into_project IN (${projectPlaceholders}))
       AND type IN (${typePlaceholders})
@@ -167,7 +167,7 @@ export function querySummariesMulti(
       ss.created_at_epoch,
       ss.project
     FROM session_summaries ss
-    LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
+    LEFT JOIN sdk_sessions s ON ss.session_db_id = s.id
     WHERE (ss.project IN (${projectPlaceholders})
            OR ss.merged_into_project IN (${projectPlaceholders}))
     ORDER BY ss.created_at_epoch DESC
