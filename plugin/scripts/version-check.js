@@ -144,16 +144,10 @@ if (!ROOT) process.exit(0);
 ensurePluginDependencies(ROOT);
 
 function emitUpgradeHint(message) {
-  if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
-    console.log(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'SessionStart',
-        additionalContext: message,
-      },
-    }));
-  } else {
-    console.error(message);
-  }
+  // 安装标记是诊断信息，不是记忆上下文。Codex 的启动命令捕获 stdout；
+  // 在这里输出 JSON 会让它跳过 context，即使共享 Worker 已经正常运行。
+  // 与 Claude Code Setup 一致，只写 stderr，让启动流程继续加载记忆。
+  console.error(message);
 }
 
 const LEGACY_VERSION_MARKER_RE =
