@@ -20,13 +20,10 @@ afterAll(() => {
   mock.module('../../src/utils/project-name.js', () => realProjectNameSnapshot);
 });
 
+const fakeSessionInit = async () => ({ continue: true, suppressOutput: true });
 mock.module('../../src/cli/handlers/session-init.js', () => ({
-  sessionInitHandler: {
-    execute: async () => ({
-      continue: true,
-      suppressOutput: true,
-    }),
-  },
+  sessionInitHandler: { execute: fakeSessionInit },
+  recordSessionPrompt: fakeSessionInit,
 }));
 
 const workerHttpRequestCalls: string[] = [];
@@ -137,7 +134,7 @@ describe('TranscriptEventProcessor AGENTS context', () => {
 
     expect(writeAgentsCalls).toHaveLength(1);
     expect(writeAgentsCalls[0].agentsPath).toBe(agentsPath);
-    expect(workerHttpRequestCalls).toContain('/api/context/inject?projects=repo-project');
+    expect(workerHttpRequestCalls).toContain('/api/context/inject?projects=repo-project&platformSource=codex');
     expect(writeAgentsCalls[0].content).toBe('injected-context');
   });
 });
