@@ -1,0 +1,11 @@
+__pycache__/
+*.db
+*.db-wal
+*.db-shm
+*.lineage-ledger.json
+*-report.json
+*.concepts-originals.json
+missing-*.json
+*.jsonl
+*.manifest.json
+chroma-sync-state.json

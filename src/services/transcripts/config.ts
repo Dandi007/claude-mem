@@ -1,111 +1,12 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
-import { paths } from '../../shared/paths.js';
+import { expandTilde, paths } from '../../shared/paths.js';
 import type { TranscriptSchema, TranscriptWatchConfig } from './types.js';
+import type { SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 
 export const DEFAULT_CONFIG_PATH = paths.transcriptsConfig();
 export const DEFAULT_STATE_PATH = paths.transcriptsState();
-
-export const CODEX_SAMPLE_SCHEMA: TranscriptSchema = {
-  name: 'codex',
-  version: '0.3',
-  description: 'Legacy schema for Codex session JSONL files. Codex native hooks are preferred.',
-  events: [
-    {
-      name: 'session-meta',
-      match: { path: 'type', equals: 'session_meta' },
-      action: 'session_context',
-      fields: {
-        sessionId: 'payload.id',
-        cwd: 'payload.cwd'
-      }
-    },
-    {
-      name: 'turn-context',
-      match: { path: 'type', equals: 'turn_context' },
-      action: 'session_context',
-      fields: {
-        cwd: 'payload.cwd'
-      }
-    },
-    {
-      name: 'user-message',
-      match: { path: 'payload.type', equals: 'user_message' },
-      action: 'session_init',
-      fields: {
-        prompt: 'payload.message'
-      }
-    },
-    {
-      name: 'assistant-message',
-      match: { path: 'payload.type', equals: 'agent_message' },
-      action: 'assistant_message',
-      fields: {
-        message: 'payload.message'
-      }
-    },
-    {
-      name: 'tool-use',
-      match: { path: 'payload.type', in: ['function_call', 'custom_tool_call', 'web_search_call'] },
-      action: 'tool_use',
-      fields: {
-        toolId: 'payload.call_id',
-        toolName: {
-          coalesce: [
-            'payload.name',
-            'payload.type'
-          ]
-        },
-        toolInput: {
-          coalesce: [
-            'payload.arguments',
-            'payload.input',
-            'payload.command',
-            'payload.action'
-          ]
-        }
-      }
-    },
-    {
-      name: 'tool-result',
-      match: { path: 'payload.type', in: ['function_call_output', 'custom_tool_call_output'] },
-      action: 'tool_result',
-      fields: {
-        toolId: 'payload.call_id',
-        toolResponse: 'payload.output'
-      }
-    },
-    {
-      name: 'exec-command-end',
-      match: { path: 'payload.type', in: ['exec_command_end', 'exec_command_output'] },
-      action: 'observation',
-      fields: {
-        toolUseId: 'payload.call_id',
-        toolName: { value: 'exec_command' },
-        toolInput: {
-          coalesce: [
-            'payload.command',
-            'payload.input'
-          ]
-        },
-        toolResponse: {
-          coalesce: [
-            'payload.aggregated_output',
-            'payload.output',
-            'payload.stdout',
-            'payload.stderr'
-          ]
-        }
-      }
-    },
-    {
-      name: 'session-end',
-      match: { path: 'payload.type', in: ['turn_aborted', 'turn_completed', 'task_complete'] },
-      action: 'session_end'
-    }
-  ]
-};
 
 export const SAMPLE_CONFIG: TranscriptWatchConfig = {
   version: 1,
@@ -135,30 +36,73 @@ export function shouldSuppressNativeCodexAgentsContext(watch: {
   return watch.context?.mode === 'agents' && isCanonicalCodexWatch && isNativeHookBackedCodexWatch(watch);
 }
 
-export function filterNativeHookBackedCodexWatches(
+/**
+ * Where Codex marks a subagent rollout: its first (session_meta) line carries
+ * payload.source = {"subagent":{"thread_spawn":{"parent_thread_id":…}}}
+ * (Codex 0.147+, #3651). Top-level sessions carry a plain string source
+ * ("cli", "vscode") and are captured by the native hooks.
+ */
+export const CODEX_SUBAGENT_SOURCE = { path: 'payload.source.subagent.thread_spawn' } as const;
+
+export type CodexWatchSettings = Pick<
+  SettingsDefaults,
+  'CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION' | 'CLAUDE_MEM_CODEX_SUBAGENT_INGESTION' | 'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS'
+>;
+
+/**
+ * Native Codex hooks capture top-level sessions, so the native-hook-backed
+ * codex transcript watch is removed by default: nothing is captured twice.
+ *
+ * The hooks never fire for the subagent threads Codex spawns. Capturing those
+ * from their rollouts is opt-in (CLAUDE_MEM_CODEX_SUBAGENT_INGESTION): every
+ * tool call of every subagent turn is an observer request, spend that did not
+ * exist before #3655 and that lands on the gateway allowance or the user's own
+ * plan. Opted in, the watch stays on, scoped to subagent rollouts only, unless
+ * subagent observations are switched off altogether
+ * (CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS, #2736). With the explicit
+ * full-ingestion opt-in the watch is left untouched and ingests every session.
+ */
+export function scopeNativeHookBackedCodexWatches(
   config: TranscriptWatchConfig,
-  allowCodexTranscriptIngestion: boolean
-): { config: TranscriptWatchConfig; removed: number } {
-  if (allowCodexTranscriptIngestion) {
-    return { config, removed: 0 };
+  settings: CodexWatchSettings,
+): { config: TranscriptWatchConfig; scoped: number; removed: number } {
+  if (settings.CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION === 'true') {
+    return { config, scoped: 0, removed: 0 };
+  }
+  const captureSubagents = settings.CLAUDE_MEM_CODEX_SUBAGENT_INGESTION === 'true'
+    && settings.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS !== 'true';
+
+  let scoped = 0;
+  let removed = 0;
+  const watches: TranscriptWatchConfig['watches'] = [];
+  for (const watch of config.watches) {
+    if (!isNativeHookBackedCodexWatch(watch)) {
+      watches.push(watch);
+    } else if (captureSubagents) {
+      scoped += 1;
+      watches.push({ ...watch, subagentOnly: true, subagentSource: { ...CODEX_SUBAGENT_SOURCE } });
+    } else {
+      removed += 1;
+    }
   }
 
-  const watches = config.watches.filter(watch => !isNativeHookBackedCodexWatch(watch));
   return {
     config: {
       ...config,
       watches,
     },
-    removed: config.watches.length - watches.length,
+    scoped,
+    removed,
   };
 }
 
 export function expandHomePath(inputPath: string): string {
   if (!inputPath) return inputPath;
-  if (inputPath.startsWith('~')) {
-    return join(homedir(), inputPath.slice(1));
-  }
-  return inputPath;
+  // Shared expandTilde/expandHome leave `~user/...` alone (resolving another
+  // user's home is out of scope). The old inline version sliced one character
+  // off any leading tilde, so `~alice/transcripts` was rewritten to
+  // `<home>/alice/transcripts` and the watcher ingested nothing silently.
+  return expandTilde(inputPath);
 }
 
 export function loadTranscriptWatchConfig(path = DEFAULT_CONFIG_PATH): TranscriptWatchConfig {
