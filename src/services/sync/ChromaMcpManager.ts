@@ -117,12 +117,17 @@ const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 // and what an unpinned env resolves today; it opens stores written by 1.0.16
 // and by 1.5.9. Raise it only after the same check on both.
 //
+// chroma-mcp 0.2.6 pins mcp 1.6.0, which imports the removed private
+// pydantic eval_type_backport helper. Keep the verified compatible version
+// until the MCP dependency can be upgraded and round-trip tested together.
+//
 // These pins are runtime-only (uvx --with) so we don't have to fork
 // chroma-mcp upstream — they apply only to claude-mem's spawned subprocess.
 const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'onnxruntime>=1.20',
   'protobuf<7',
   'chromadb==1.5.9',
+  'pydantic==2.10.6',
 ];
 
 // The chromadb version the launcher pins, read from the override list itself

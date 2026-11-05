@@ -907,6 +907,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
       'onnxruntime>=1.20',
       'protobuf<7',
       'chromadb==1.5.9',
+      'pydantic==2.10.6',
     ]);
     expect(logEntries.find(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')?.meta)
       .toMatchObject({ count: 1, exitCode: null, signalCode: 'SIGSEGV' });
@@ -1754,7 +1755,7 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     expect(existsSync(chromaStoreRecordPath())).toBe(true);
     const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
     expect(record.chromaMcpVersion).toBe('0.2.6');
-    expect(record.depOverrides).toEqual(['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9']);
+    expect(record.depOverrides).toEqual(['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9', 'pydantic==2.10.6']);
     // The engine version is read from the launcher pin, never kept separately.
     expect(record.chromadbVersion).toBe('1.5.9');
     expect(record.depOverrides).toContain(`chromadb==${record.chromadbVersion}`);

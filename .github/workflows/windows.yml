@@ -136,7 +136,9 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          cache-python: true
+          # Windows uv cache prune exits 2 after successful lifecycle tests.
+          # Keep reuse, but avoid the failing optional cleanup.
+          prune-cache: false
 
       - run: npm install --no-audit --no-fund
 
