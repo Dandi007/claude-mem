@@ -23,10 +23,13 @@ describe('OpenRouterProvider token compatibility', () => {
       const result = await (provider as any).query(
         [{ role: 'user', content: 'hello' }],
         { apiKey: 'fake', model: 'gpt-5', fallbackModels: [], apiUrl: 'https://gateway.test/v1/chat/completions' },
+        undefined, undefined, 'session-a',
       );
 
       expect(result.content).toBe('<observation>ok</observation>');
       expect(requests).toHaveLength(2);
+      expect(requests.map(r => new Headers(r.headers).get('X-Session-Id')))
+        .toEqual(['claude-mem:session-a', 'claude-mem:session-a']);
       const first = JSON.parse(String(requests[0].body)) as Record<string, unknown>;
       const second = JSON.parse(String(requests[1].body)) as Record<string, unknown>;
       expect(first.max_tokens).toBe(4096);
@@ -77,6 +80,28 @@ describe('OpenRouterProvider token compatibility', () => {
       );
 
       expect(result.content).toBe('ok');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+
+describe('OpenRouterProvider session affinity', () => {
+  it('isolates interleaved sessions and omits the header for standalone calls', async () => {
+    const originalFetch = globalThis.fetch;
+    const ids: (string | null)[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      ids.push(new Headers(init?.headers).get('X-Session-Id'));
+      await Promise.resolve();
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }));
+    }) as typeof fetch;
+    try {
+      const provider = new OpenRouterProvider({} as never, {} as never);
+      const config = { apiKey: 'fake', model: 'cheap', fallbackModels: [], apiUrl: 'https://gateway.test/v1/chat/completions' };
+      await Promise.all(['a', 'b', 'a', undefined, 'line\nvalue'].map(id =>
+        (provider as any).query([{ role: 'user', content: 'hello' }], config, undefined, undefined, id)));
+      expect(ids).toEqual(['claude-mem:a', 'claude-mem:b', 'claude-mem:a', null, 'claude-mem:line%0Avalue']);
     } finally {
       globalThis.fetch = originalFetch;
     }

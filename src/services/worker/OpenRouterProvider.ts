@@ -714,6 +714,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     config: OpenRouterConfig,
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
+    contentSessionId?: string,
   ): Promise<ProviderQueryResult> {
     // Rotation wraps withRetry rather than living inside it: the inner retry
     // still owns transient failures against one key, and this outer sweep moves
@@ -724,7 +725,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       { poolId: 'openrouter', keys: resolvePoolKeys(config), label: 'OpenRouter', rateLimitUntilNextKey },
       ({ key, poolSize }) => this.queryOpenRouterMultiTurn(
         history, key, poolSize, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName,
-        signal, config.plainText, perAttemptTimeoutMs, config.extraBody, config.reasoningEffort,
+        signal, config.plainText, perAttemptTimeoutMs, config.extraBody, config.reasoningEffort, contentSessionId,
       ),
     );
   }
@@ -744,6 +745,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     plainText?: boolean,
     extraBody?: Record<string, unknown>,
     reasoningEffort?: OpenRouterReasoningEffort,
+    contentSessionId?: string,
   ): Promise<Response> {
     const body = buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort });
     // Bound, so a runtime whose fetch needs its receiver still gets it.
@@ -753,6 +755,8 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         'Authorization': `Bearer ${apiKey}`,
         ...openRouterAttributionHeaders(siteUrl, appName),
         'Content-Type': 'application/json',
+        // Stable across observation generations and retries; never provider-global state.
+        ...(contentSessionId ? { 'X-Session-Id': `claude-mem:${encodeURIComponent(contentSessionId)}` } : {}),
         ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
       },
       signal: attemptSignal,
@@ -774,6 +778,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     perAttemptTimeoutMs?: number,
     extraBody?: Record<string, unknown>,
     reasoningEffort?: OpenRouterReasoningEffort,
+    contentSessionId?: string,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -796,7 +801,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, maxOutputTokens, plainText, extraBody, reasoningEffort);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, priorRequestId, attemptSignal, maxOutputTokens, plainText, extraBody, reasoningEffort, contentSessionId);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyOpenRouterError({ cause: err, requestUrl: apiUrl });

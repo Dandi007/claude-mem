@@ -149,6 +149,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     config: TConfig,
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
+    contentSessionId?: string,
   ): Promise<ProviderQueryResult>;
 
   /**
@@ -366,7 +367,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     try {
       session.lastPromptSentAt = Date.now();
       session.lastGeneratorSource = 'init';
-      const initResponse = await this.query(session.conversationHistory, config);
+      const initResponse = await this.query(session.conversationHistory, config, undefined, undefined, session.contentSessionId);
       this.handleInitResponse(initResponse, session, model);
     } catch (error: unknown) {
       if (await this.recycleOnContextOverflow(error, session, worker)) return;
@@ -531,7 +532,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.query(session.conversationHistory, config);
+    const obsResponse = await this.query(session.conversationHistory, config, undefined, undefined, session.contentSessionId);
 
     // Billed usage counts even when the reply came back empty.
     accumulateObserverUsage(session, obsResponse);
@@ -598,7 +599,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId, model: summaryModel
       });
     }
-    const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
+    const summaryResponse = await this.query(session.conversationHistory, summaryConfig, undefined, undefined, session.contentSessionId);
 
     accumulateObserverUsage(session, summaryResponse);
     this.recordMeasuredContext(session, summaryResponse);
